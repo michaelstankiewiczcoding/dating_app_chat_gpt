@@ -447,3 +447,254 @@ node chat.js
 
 Would you like a React Native frontend to connect to this backend? 🚀
 
+
+
+
+
+8️⃣ Real-Time Chat Integration for Your Dating App
+
+To enable real-time messaging between matched users, we'll use Socket.io in the Node.js backend and React Native frontend.
+
+✅ Features:
+
+✔ Live Chat System (WebSockets)
+✔ Message Storage (PostgreSQL)
+✔ User Online Status
+✔ Typing Indicator
+
+
+---
+
+1️⃣ Backend: WebSocket Setup (chat.js)
+
+Install Socket.io if you haven't:
+
+npm install socket.io
+
+Create WebSocket Server
+
+const { Server } = require("socket.io");
+const { Pool } = require("pg");
+
+const pool = new Pool({
+    user: "postgres",
+    host: "localhost",
+    database: "dating_app",
+    password: "yourpassword",
+    port: 5432
+});
+
+const io = new Server(5001, { cors: { origin: "*" } });
+
+let usersOnline = {};
+
+io.on("connection", (socket) => {
+    console.log("User connected:", socket.id);
+
+    socket.on("userConnected", (userId) => {
+        usersOnline[userId] = socket.id;
+        io.emit("updateOnlineUsers", Object.keys(usersOnline));
+    });
+
+    socket.on("sendMessage", async (data) => {
+        const { senderId, receiverId, message } = data;
+
+        await pool.query(
+            "INSERT INTO messages (sender_id, receiver_id, message, sent_at) VALUES ($1, $2, $3, NOW())",
+            [senderId, receiverId, message]
+        );
+
+        if (usersOnline[receiverId]) {
+            io.to(usersOnline[receiverId]).emit("receiveMessage", data);
+        }
+    });
+
+    socket.on("typing", (data) => {
+        if (usersOnline[data.receiverId]) {
+            io.to(usersOnline[data.receiverId]).emit("userTyping", { senderId: data.senderId });
+        }
+    });
+
+    socket.on("disconnect", () => {
+        Object.keys(usersOnline).forEach((key) => {
+            if (usersOnline[key] === socket.id) delete usersOnline[key];
+        });
+        io.emit("updateOnlineUsers", Object.keys(usersOnline));
+        console.log("User disconnected:", socket.id);
+    });
+});
+
+io.listen(5001);
+
+
+---
+
+2️⃣ Frontend: Chat Screen (ChatScreen.js)
+
+Install Socket.io client:
+
+npm install socket.io-client
+
+Create Chat Screen
+
+import React, { useState, useEffect } from "react";
+import { View, Text, TextInput, Button, FlatList } from "react-native";
+import { io } from "socket.io-client";
+import { getUserProfile } from "../services/api";
+
+const socket = io("http://localhost:5001");
+
+const ChatScreen = ({ route }) => {
+    const { receiverId, receiverName } = route.params;
+    const [messages, setMessages] = useState([]);
+    const [message, setMessage] = useState("");
+    const [userId, setUserId] = useState(null);
+    const [typing, setTyping] = useState(false);
+
+    useEffect(() => {
+        const fetchUser = async () => {
+            const response = await getUserProfile("YOUR_AUTH_TOKEN");
+            setUserId(response.data.id);
+            socket.emit("userConnected", response.data.id);
+        };
+        fetchUser();
+
+        socket.on("receiveMessage", (data) => {
+            if (data.receiverId === userId) {
+                setMessages((prevMessages) => [...prevMessages, data]);
+            }
+        });
+
+        socket.on("userTyping", (data) => {
+            if (data.senderId === receiverId) {
+                setTyping(true);
+                setTimeout(() => setTyping(false), 1000);
+            }
+        });
+
+        return () => {
+            socket.disconnect();
+        };
+    }, [receiverId, userId]);
+
+    const sendMessage = () => {
+        if (message.trim() === "") return;
+
+        const data = { senderId: userId, receiverId, message };
+        socket.emit("sendMessage", data);
+        setMessages([...messages, data]);
+        setMessage("");
+    };
+
+    return (
+        <View style={{ flex: 1, padding: 20 }}>
+            <Text style={{ fontSize: 20, fontWeight: "bold" }}>Chat with {receiverName}</Text>
+            
+            <FlatList
+                data={messages}
+                keyExtractor={(item, index) => index.toString()}
+                renderItem={({ item }) => (
+                    <View style={{ padding: 10, alignSelf: item.senderId === userId ? "flex-end" : "flex-start", backgroundColor: item.senderId === userId ? "#DCF8C6" : "#E5E5EA", margin: 5, borderRadius: 10 }}>
+                        <Text>{item.message}</Text>
+                    </View>
+                )}
+            />
+
+            {typing && <Text style={{ fontStyle: "italic" }}>Typing...</Text>}
+
+            <TextInput
+                value={message}
+                onChangeText={(text) => {
+                    setMessage(text);
+                    socket.emit("typing", { senderId: userId, receiverId });
+                }}
+                placeholder="Type a message..."
+                style={{ borderWidth: 1, padding: 10, marginBottom: 10 }}
+            />
+            <Button title="Send" onPress={sendMessage} />
+        </View>
+    );
+};
+
+export default ChatScreen;
+
+
+---
+
+3️⃣ Updating the Match List Screen
+
+When a user matches with another, allow them to start a chat.
+
+Match List (MatchListScreen.js)
+
+import React, { useState, useEffect } from "react";
+import { View, Text, FlatList, TouchableOpacity } from "react-native";
+import { getUserProfile } from "../services/api";
+
+const MatchListScreen = ({ navigation }) => {
+    const [matches, setMatches] = useState([]);
+    const token = "YOUR_AUTH_TOKEN"; // Replace with stored token
+
+    useEffect(() => {
+        const fetchMatches = async () => {
+            const response = await getUserProfile(token);
+            setMatches(response.data.matches);
+        };
+        fetchMatches();
+    }, []);
+
+    return (
+        <View style={{ flex: 1, padding: 20 }}>
+            <Text style={{ fontSize: 20, fontWeight: "bold" }}>Your Matches</Text>
+            <FlatList
+                data={matches}
+                keyExtractor={(item) => item.id.toString()}
+                renderItem={({ item }) => (
+                    <TouchableOpacity onPress={() => navigation.navigate("Chat", { receiverId: item.id, receiverName: item.name })}>
+                        <View style={{ padding: 10, backgroundColor: "#fff", marginVertical: 5, borderRadius: 10 }}>
+                            <Text style={{ fontSize: 16 }}>{item.name}</Text>
+                        </View>
+                    </TouchableOpacity>
+                )}
+            />
+        </View>
+    );
+};
+
+export default MatchListScreen;
+
+
+---
+
+4️⃣ Running the Chat System
+
+Start Backend
+
+node chat.js
+
+Run React Native App
+
+npx react-native run-android  # or run-ios for iOS
+
+
+---
+
+5️⃣ Features Implemented
+
+✅ WebSocket Real-Time Chat
+✅ Stores Messages in Database
+✅ Typing Indicator
+✅ User Online Status
+
+
+---
+
+💡 Next Steps
+
+🚀 Enhance UI with Avatars & Message Read Status
+🚀 Push Notifications for New Messages (Firebase)
+🚀 Video Call Integration (WebRTC)
+
+Would you like push notifications for new messages next? 🚀
+
+
