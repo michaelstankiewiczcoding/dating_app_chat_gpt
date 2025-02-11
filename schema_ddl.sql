@@ -1,8 +1,7 @@
 CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     email VARCHAR(255) UNIQUE NOT NULL,
-    password VARCHAR(255),
-    phone VARCHAR(15),
+    password VARCHAR(255) NOT NULL,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -14,8 +13,8 @@ CREATE TABLE profiles (
     gender VARCHAR(20),
     bio TEXT,
     interests TEXT[],
-    location GEOMETRY(Point, 4326),  -- Geolocation for nearby matches
-    profile_pictures TEXT[] -- Array of image URLs
+    location GEOMETRY(Point, 4326), -- Geolocation for nearby matches
+    profile_pictures TEXT[]
 );
 
 CREATE TABLE matches (
