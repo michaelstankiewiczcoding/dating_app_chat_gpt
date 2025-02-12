@@ -1232,3 +1232,270 @@ Would you like call accept/reject UI next? 📞🚀
 
 
 
+
+
+📞 Call Accept/Reject UI for Video Calling
+
+To improve the user experience, we will add: ✅ Incoming Call Screen with Accept & Reject Buttons
+✅ Real-Time Call Notifications using Socket.io
+✅ Improved UI for Active Calls (Mute, End Call, Camera Flip)
+
+
+---
+
+1️⃣ Backend: Notify Users of Incoming Calls
+
+Modify signalingServer.js to send call notifications.
+
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*" } });
+
+let usersOnline = {};
+
+io.on("connection", (socket) => {
+    console.log("User connected:", socket.id);
+
+    socket.on("userOnline", (userId) => {
+        usersOnline[userId] = socket.id;
+        console.log(`User ${userId} is online`);
+    });
+
+    socket.on("callUser", (data) => {
+        const { callerId, receiverId, roomId } = data;
+        if (usersOnline[receiverId]) {
+            io.to(usersOnline[receiverId]).emit("incomingCall", { callerId, roomId });
+        }
+    });
+
+    socket.on("answerCall", (data) => {
+        io.to(usersOnline[data.callerId]).emit("callAnswered", { roomId: data.roomId, accepted: data.accepted });
+    });
+
+    socket.on("disconnect", () => {
+        Object.keys(usersOnline).forEach((key) => {
+            if (usersOnline[key] === socket.id) delete usersOnline[key];
+        });
+        console.log("User disconnected:", socket.id);
+    });
+});
+
+server.listen(5002, () => {
+    console.log("WebRTC Signaling Server running on port 5002");
+});
+
+
+---
+
+2️⃣ React Native: Incoming Call UI
+
+Create a new screen IncomingCallScreen.js.
+
+import React, { useEffect, useState } from "react";
+import { View, Text, Button, Alert } from "react-native";
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:5002");
+
+const IncomingCallScreen = ({ navigation }) => {
+    const [callerId, setCallerId] = useState(null);
+    const [roomId, setRoomId] = useState(null);
+
+    useEffect(() => {
+        socket.on("incomingCall", (data) => {
+            setCallerId(data.callerId);
+            setRoomId(data.roomId);
+            Alert.alert("Incoming Call", `User ${data.callerId} is calling you.`);
+        });
+
+        return () => socket.off("incomingCall");
+    }, []);
+
+    const acceptCall = () => {
+        socket.emit("answerCall", { callerId, roomId, accepted: true });
+        navigation.navigate("VideoCall", { roomId });
+    };
+
+    const rejectCall = () => {
+        socket.emit("answerCall", { callerId, roomId, accepted: false });
+        setCallerId(null);
+        setRoomId(null);
+    };
+
+    return (
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+            {callerId ? (
+                <>
+                    <Text>User {callerId} is calling...</Text>
+                    <Button title="Accept" onPress={acceptCall} />
+                    <Button title="Reject" onPress={rejectCall} />
+                </>
+            ) : (
+                <Text>Waiting for calls...</Text>
+            )}
+        </View>
+    );
+};
+
+export default IncomingCallScreen;
+
+
+---
+
+3️⃣ Outgoing Call Button
+
+Modify MatchListScreen.js to allow calling users.
+
+import React, { useState, useEffect } from "react";
+import { View, Text, FlatList, TouchableOpacity, Button, Alert } from "react-native";
+import { io } from "socket.io-client";
+import { getUserProfile } from "../services/api";
+
+const socket = io("http://localhost:5002");
+
+const MatchListScreen = ({ navigation }) => {
+    const [matches, setMatches] = useState([]);
+    const token = "YOUR_AUTH_TOKEN"; // Replace with stored token
+
+    useEffect(() => {
+        const fetchMatches = async () => {
+            const response = await getUserProfile(token);
+            setMatches(response.data.matches);
+        };
+        fetchMatches();
+    }, []);
+
+    const callUser = (receiverId) => {
+        const roomId = `${receiverId}_${Date.now()}`;
+        socket.emit("callUser", { callerId: "YOUR_USER_ID", receiverId, roomId });
+        navigation.navigate("VideoCall", { roomId });
+    };
+
+    return (
+        <View style={{ flex: 1, padding: 20 }}>
+            <Text style={{ fontSize: 20, fontWeight: "bold" }}>Your Matches</Text>
+            <FlatList
+                data={matches}
+                keyExtractor={(item) => item.id.toString()}
+                renderItem={({ item }) => (
+                    <View style={{ padding: 10, backgroundColor: "#fff", marginVertical: 5, borderRadius: 10 }}>
+                        <Text style={{ fontSize: 16 }}>{item.name}</Text>
+                        <Button title="Start Video Call" onPress={() => callUser(item.id)} />
+                    </View>
+                )}
+            />
+        </View>
+    );
+};
+
+export default MatchListScreen;
+
+
+---
+
+4️⃣ Update VideoCallScreen.js to Handle Call Acceptance
+
+Modify VideoCallScreen to start the call only when accepted.
+
+import React, { useEffect, useRef, useState } from "react";
+import { View, Button, Text, Alert } from "react-native";
+import { RTCPeerConnection, RTCView, mediaDevices, RTCSessionDescription, RTCIceCandidate } from "react-native-webrtc";
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:5002");
+
+const VideoCallScreen = ({ route, navigation }) => {
+    const { roomId } = route.params;
+    const [localStream, setLocalStream] = useState(null);
+    const [remoteStream, setRemoteStream] = useState(null);
+    const peerConnection = useRef(new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    })).current;
+
+    useEffect(() => {
+        startLocalStream();
+        socket.emit("joinCall", roomId);
+
+        socket.on("callAnswered", (data) => {
+            if (!data.accepted) {
+                Alert.alert("Call Rejected", "The other user rejected the call.");
+                navigation.goBack();
+            }
+        });
+
+        socket.on("offer", async (data) => {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(new RTCSessionDescription(answer));
+            socket.emit("answer", { target: data.sender, sdp: answer, sender: socket.id });
+        });
+
+        socket.on("answer", async (data) => {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        });
+
+        socket.on("iceCandidate", async (data) => {
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            } catch (e) {
+                console.error("Error adding ice candidate", e);
+            }
+        });
+
+        peerConnection.ontrack = (event) => {
+            setRemoteStream(event.streams[0]);
+        };
+
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                socket.emit("iceCandidate", { target: roomId, candidate: event.candidate, sender: socket.id });
+            }
+        };
+
+        return () => {
+            peerConnection.close();
+            socket.disconnect();
+        };
+    }, []);
+
+    const startLocalStream = async () => {
+        const stream = await mediaDevices.getUserMedia({ video: true, audio: true });
+        setLocalStream(stream);
+        stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
+    };
+
+    return (
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+            {localStream && <RTCView streamURL={localStream.toURL()} style={{ width: "100%", height: 300 }} />}
+            {remoteStream && <RTCView streamURL={remoteStream.toURL()} style={{ width: "100%", height: 300 }} />}
+            <Button title="End Call" onPress={() => socket.disconnect()} />
+        </View>
+    );
+};
+
+export default VideoCallScreen;
+
+
+---
+
+✅ Features Implemented
+
+✔ Incoming Call Screen (Accept/Reject)
+✔ Real-time Call Notifications using WebSockets
+✔ Updated Video Call Logic (Handles Rejection)
+
+
+---
+
+🚀 Next Steps
+
+✨ Mute/Unmute, Flip Camera, Speaker Toggle
+✨ End-to-End Encryption for Secure Calls
+✨ Deploy to Play Store / App Store
+
+Would you like mute/unmute & camera flip controls next? 🎥📲
+
