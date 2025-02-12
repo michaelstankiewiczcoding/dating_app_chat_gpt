@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, FlatList, TouchableOpacity } from "react-native";
+import { View, Text, FlatList, TouchableOpacity, Button } from "react-native";
 import { getUserProfile } from "../services/api";
 
 const MatchListScreen = ({ navigation }) => {
@@ -21,11 +21,10 @@ const MatchListScreen = ({ navigation }) => {
                 data={matches}
                 keyExtractor={(item) => item.id.toString()}
                 renderItem={({ item }) => (
-                    <TouchableOpacity onPress={() => navigation.navigate("Chat", { receiverId: item.id, receiverName: item.name })}>
-                        <View style={{ padding: 10, backgroundColor: "#fff", marginVertical: 5, borderRadius: 10 }}>
-                            <Text style={{ fontSize: 16 }}>{item.name}</Text>
-                        </View>
-                    </TouchableOpacity>
+                    <View style={{ padding: 10, backgroundColor: "#fff", marginVertical: 5, borderRadius: 10 }}>
+                        <Text style={{ fontSize: 16 }}>{item.name}</Text>
+                        <Button title="Start Video Call" onPress={() => navigation.navigate("VideoCall", { roomId: item.id })} />
+                    </View>
                 )}
             />
         </View>
