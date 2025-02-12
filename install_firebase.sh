@@ -1,0 +1,1 @@
+npm install @react-native-firebase/app @react-native-firebase/messaging
