@@ -698,3 +698,537 @@ npx react-native run-android  # or run-ios for iOS
 Would you like push notifications for new messages next? 🚀
 
 
+
+9️⃣ Push Notifications for New Messages (React Native + Firebase)
+
+Push notifications ensure users receive alerts for new messages, matches, and likes, even when the app is in the background.
+
+
+---
+
+1️⃣ Setup Firebase in React Native
+
+Step 1: Create a Firebase Project
+
+1. Go to Firebase Console.
+
+
+2. Click "Create Project" → Enter a name → Continue.
+
+
+3. Add an Android App / iOS App:
+
+For Android: Add package name (from android/app/src/main/AndroidManifest.xml).
+
+For iOS: Add the Bundle ID.
+
+
+
+4. Download google-services.json (for Android) or GoogleService-Info.plist (for iOS).
+
+
+5. Place it in:
+
+android/app/google-services.json
+
+ios/GoogleService-Info.plist
+
+
+
+6. Enable Cloud Messaging under Firebase Project Settings → Cloud Messaging.
+
+
+
+
+---
+
+Step 2: Install Firebase Dependencies
+
+Run:
+
+npm install @react-native-firebase/app @react-native-firebase/messaging
+
+For iOS:
+
+cd ios
+pod install
+
+
+---
+
+2️⃣ Backend: Sending Push Notifications
+
+Install Firebase Admin SDK in Node.js Backend
+
+Run:
+
+npm install firebase-admin
+
+Initialize Firebase in Backend (pushNotifications.js)
+
+const admin = require("firebase-admin");
+const { Pool } = require("pg");
+
+admin.initializeApp({
+    credential: admin.credential.cert(require("./firebase-admin.json")), // Your Firebase Admin SDK JSON
+});
+
+const pool = new Pool({
+    user: "postgres",
+    host: "localhost",
+    database: "dating_app",
+    password: "yourpassword",
+    port: 5432
+});
+
+// Function to send a push notification
+const sendNotification = async (receiverId, message) => {
+    const user = await pool.query("SELECT fcm_token FROM users WHERE id = $1", [receiverId]);
+    if (!user.rows[0] || !user.rows[0].fcm_token) return;
+
+    const messagePayload = {
+        notification: { title: "New Message", body: message },
+        token: user.rows[0].fcm_token,
+    };
+
+    admin.messaging().send(messagePayload)
+        .then((response) => console.log("Notification sent:", response))
+        .catch((error) => console.log("Error sending notification:", error));
+};
+
+module.exports = { sendNotification };
+
+Trigger Push Notifications on New Messages
+
+Modify chat.js WebSocket server:
+
+const { sendNotification } = require("./pushNotifications");
+
+socket.on("sendMessage", async (data) => {
+    const { senderId, receiverId, message } = data;
+
+    await pool.query(
+        "INSERT INTO messages (sender_id, receiver_id, message, sent_at) VALUES ($1, $2, $3, NOW())",
+        [senderId, receiverId, message]
+    );
+
+    if (usersOnline[receiverId]) {
+        io.to(usersOnline[receiverId]).emit("receiveMessage", data);
+    } else {
+        sendNotification(receiverId, message);
+    }
+});
+
+
+---
+
+3️⃣ Frontend: Requesting Push Notification Permissions
+
+Modify App.js to request Firebase messaging permission.
+
+import React, { useEffect } from "react";
+import messaging from "@react-native-firebase/messaging";
+import { Alert } from "react-native";
+
+const App = () => {
+    useEffect(() => {
+        const requestPermission = async () => {
+            const authStatus = await messaging().requestPermission();
+            if (authStatus === messaging.AuthorizationStatus.AUTHORIZED) {
+                console.log("Notification permission granted.");
+            } else {
+                console.log("Notification permission denied.");
+            }
+        };
+
+        requestPermission();
+
+        const unsubscribe = messaging().onMessage(async (remoteMessage) => {
+            Alert.alert(remoteMessage.notification.title, remoteMessage.notification.body);
+        });
+
+        return unsubscribe;
+    }, []);
+
+    return <YourNavigationComponent />;
+};
+
+export default App;
+
+
+---
+
+4️⃣ Storing FCM Tokens for Each User
+
+Modify Login API (server.js) to store user’s Firebase Cloud Messaging (FCM) token.
+
+app.post("/login", async (req, res) => {
+    const { email, password, fcm_token } = req.body;
+    const user = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
+
+    if (user.rows.length === 0) return res.status(401).json({ error: "User not found" });
+
+    const validPassword = await bcrypt.compare(password, user.rows[0].password);
+    if (!validPassword) return res.status(401).json({ error: "Invalid credentials" });
+
+    await pool.query("UPDATE users SET fcm_token = $1 WHERE id = $2", [fcm_token, user.rows[0].id]);
+
+    const token = jwt.sign({ id: user.rows[0].id }, SECRET_KEY, { expiresIn: "7d" });
+    res.json({ token });
+});
+
+
+---
+
+5️⃣ Sending the FCM Token from React Native
+
+Modify Login Screen (LoginScreen.js) to send the FCM token.
+
+import React, { useState, useEffect } from "react";
+import { View, TextInput, Button, Alert } from "react-native";
+import messaging from "@react-native-firebase/messaging";
+import { loginUser } from "../services/api";
+
+const LoginScreen = ({ navigation }) => {
+    const [email, setEmail] = useState("");
+    const [password, setPassword] = useState("");
+    const [fcmToken, setFcmToken] = useState("");
+
+    useEffect(() => {
+        const getToken = async () => {
+            const token = await messaging().getToken();
+            setFcmToken(token);
+        };
+        getToken();
+    }, []);
+
+    const handleLogin = async () => {
+        try {
+            const response = await loginUser(email, password, fcmToken);
+            Alert.alert("Success", "Login Successful");
+            navigation.navigate("Home");
+        } catch (error) {
+            Alert.alert("Error", "Invalid credentials");
+        }
+    };
+
+    return (
+        <View style={{ padding: 20 }}>
+            <TextInput placeholder="Email" value={email} onChangeText={setEmail} style={{ borderWidth: 1, marginBottom: 10 }} />
+            <TextInput placeholder="Password" secureTextEntry value={password} onChangeText={setPassword} style={{ borderWidth: 1, marginBottom: 10 }} />
+            <Button title="Login" onPress={handleLogin} />
+        </View>
+    );
+};
+
+export default LoginScreen;
+
+
+---
+
+6️⃣ Testing Push Notifications
+
+Step 1: Start Backend
+
+node server.js
+node chat.js
+
+Step 2: Run React Native App
+
+npx react-native run-android  # or run-ios for iOS
+
+Step 3: Send a Test Push Notification
+
+Manually send a push notification using Firebase:
+
+curl -X POST "https://fcm.googleapis.com/fcm/send" \
+  -H "Authorization: key=YOUR_SERVER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "USER_FCM_TOKEN",
+    "notification": {
+      "title": "New Message",
+      "body": "You have a new message"
+    }
+  }'
+
+
+---
+
+🎯 Features Implemented
+
+✅ Push Notifications for New Messages
+✅ Stores FCM Token for Users
+✅ Handles Notifications in Background & Foreground
+✅ Supports Firebase Cloud Messaging
+
+
+---
+
+🚀 Next Steps
+
+✨ Push Notifications for New Matches & Likes
+✨ Integrate Video & Voice Call (WebRTC)
+✨ Deploy App to Play Store / App Store
+
+Would you like video call integration (WebRTC) next? 🎥
+
+
+
+
+
+
+
+
+
+
+🔟 Video Call Integration (WebRTC + React Native + Node.js)
+
+To enable live video calling between matched users, we’ll use WebRTC (Web Real-Time Communication), which allows peer-to-peer video/audio streaming.
+
+✅ Features:
+
+✔ Real-time Video & Audio Call
+✔ WebRTC Integration
+✔ Signaling Server using Socket.io
+✔ ICE (Interactive Connectivity Establishment) Servers for Connection
+✔ React Native UI for Calls
+
+
+---
+
+1️⃣ Install Dependencies
+
+First, install the necessary WebRTC and Socket.io packages in React Native:
+
+npm install react-native-webrtc socket.io-client
+
+
+---
+
+2️⃣ Backend: WebRTC Signaling Server
+
+The signaling server helps in establishing WebRTC connections between users.
+
+Install Dependencies
+
+npm install express socket.io cors
+
+Create signalingServer.js
+
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: { origin: "*" }
+});
+
+io.on("connection", (socket) => {
+    console.log("User connected:", socket.id);
+
+    socket.on("joinCall", (room) => {
+        socket.join(room);
+        console.log(`User ${socket.id} joined room: ${room}`);
+        socket.to(room).emit("userJoined", socket.id);
+    });
+
+    socket.on("offer", (data) => {
+        socket.to(data.target).emit("offer", { sdp: data.sdp, sender: data.sender });
+    });
+
+    socket.on("answer", (data) => {
+        socket.to(data.target).emit("answer", { sdp: data.sdp, sender: data.sender });
+    });
+
+    socket.on("iceCandidate", (data) => {
+        socket.to(data.target).emit("iceCandidate", { candidate: data.candidate, sender: data.sender });
+    });
+
+    socket.on("disconnect", () => {
+        console.log("User disconnected:", socket.id);
+    });
+});
+
+server.listen(5002, () => {
+    console.log("WebRTC Signaling Server running on port 5002");
+});
+
+
+---
+
+3️⃣ React Native: Video Call UI
+
+Create a new screen for the Video Call Interface.
+
+Create VideoCallScreen.js
+
+import React, { useEffect, useRef, useState } from "react";
+import { View, Button, Text } from "react-native";
+import { RTCPeerConnection, RTCView, mediaDevices, RTCSessionDescription, RTCIceCandidate } from "react-native-webrtc";
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:5002");
+
+const VideoCallScreen = ({ route }) => {
+    const { roomId } = route.params;
+    const [localStream, setLocalStream] = useState(null);
+    const [remoteStream, setRemoteStream] = useState(null);
+    const peerConnection = useRef(new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    })).current;
+
+    useEffect(() => {
+        startLocalStream();
+        socket.emit("joinCall", roomId);
+
+        socket.on("userJoined", async (peerId) => {
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(new RTCSessionDescription(offer));
+            socket.emit("offer", { target: peerId, sdp: offer, sender: socket.id });
+        });
+
+        socket.on("offer", async (data) => {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(new RTCSessionDescription(answer));
+            socket.emit("answer", { target: data.sender, sdp: answer, sender: socket.id });
+        });
+
+        socket.on("answer", async (data) => {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        });
+
+        socket.on("iceCandidate", async (data) => {
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            } catch (e) {
+                console.error("Error adding ice candidate", e);
+            }
+        });
+
+        peerConnection.ontrack = (event) => {
+            setRemoteStream(event.streams[0]);
+        };
+
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                socket.emit("iceCandidate", { target: roomId, candidate: event.candidate, sender: socket.id });
+            }
+        };
+
+        return () => {
+            peerConnection.close();
+            socket.disconnect();
+        };
+    }, []);
+
+    const startLocalStream = async () => {
+        const stream = await mediaDevices.getUserMedia({ video: true, audio: true });
+        setLocalStream(stream);
+        stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
+    };
+
+    return (
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+            {localStream && <RTCView streamURL={localStream.toURL()} style={{ width: "100%", height: 300 }} />}
+            {remoteStream && <RTCView streamURL={remoteStream.toURL()} style={{ width: "100%", height: 300 }} />}
+            <Button title="End Call" onPress={() => socket.disconnect()} />
+        </View>
+    );
+};
+
+export default VideoCallScreen;
+
+
+---
+
+4️⃣ Call Button in Match List
+
+Modify MatchListScreen.js to include a Video Call Button.
+
+import React, { useState, useEffect } from "react";
+import { View, Text, FlatList, TouchableOpacity, Button } from "react-native";
+import { getUserProfile } from "../services/api";
+
+const MatchListScreen = ({ navigation }) => {
+    const [matches, setMatches] = useState([]);
+    const token = "YOUR_AUTH_TOKEN"; // Replace with stored token
+
+    useEffect(() => {
+        const fetchMatches = async () => {
+            const response = await getUserProfile(token);
+            setMatches(response.data.matches);
+        };
+        fetchMatches();
+    }, []);
+
+    return (
+        <View style={{ flex: 1, padding: 20 }}>
+            <Text style={{ fontSize: 20, fontWeight: "bold" }}>Your Matches</Text>
+            <FlatList
+                data={matches}
+                keyExtractor={(item) => item.id.toString()}
+                renderItem={({ item }) => (
+                    <View style={{ padding: 10, backgroundColor: "#fff", marginVertical: 5, borderRadius: 10 }}>
+                        <Text style={{ fontSize: 16 }}>{item.name}</Text>
+                        <Button title="Start Video Call" onPress={() => navigation.navigate("VideoCall", { roomId: item.id })} />
+                    </View>
+                )}
+            />
+        </View>
+    );
+};
+
+export default MatchListScreen;
+
+
+---
+
+5️⃣ Running the Video Call System
+
+Step 1: Start the WebRTC Signaling Server
+
+node signalingServer.js
+
+Step 2: Run React Native App
+
+npx react-native run-android  # or run-ios for iOS
+
+Step 3: Start a Call
+
+1. Match with a user.
+
+
+2. Click "Start Video Call".
+
+
+3. The other user should join the same room for the call to start.
+
+
+
+
+---
+
+🎯 Features Implemented
+
+✅ WebRTC for Video Calls
+✅ Real-Time Signaling using Socket.io
+✅ Peer-to-Peer Video & Audio Communication
+✅ Integrated into Match System
+
+
+---
+
+🚀 Next Steps
+
+✨ Enhance UI (Call Accept/Reject UI, Camera Flip, Mute)
+✨ Add End-to-End Encryption for Secure Calls
+✨ Deploy to Production (AWS, Firebase)
+
+Would you like call accept/reject UI next? 📞🚀
+
+
+
